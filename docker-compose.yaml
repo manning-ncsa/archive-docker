@@ -1,0 +1,133 @@
+version: '3'
+
+networks:
+  internal:
+    external: false
+
+volumes:
+  objectstoredata: {}
+  postgres: {}
+  waitforit: {}
+
+services:
+  #
+  # Archive database: SQL database storing archived message metadata
+  #
+  archive-db:
+    image: 'postgres:latest'
+    container_name: archive-db
+    env_file:
+      - env.default
+      - .env
+    ports:
+      - 127.0.0.1:5432:5432
+    networks:
+      - internal
+    volumes:
+      - postgres:/var/lib/postgresql
+  #
+  # Archive API server database semaphore
+  #
+  archive-wait-for-db:
+    image: 'postgres:latest'
+    container_name: archive-wait-for-db
+    env_file:
+      - env.default
+      - .env
+    networks:
+      - internal
+    command:
+      - sh
+      - -c
+      - >
+        until pg_isready \
+            --username=archive \
+            --dbname=archive \
+            --host=archive-db \
+            --port=5432;
+          do echo waiting for database;
+          sleep 2;
+          done;
+          touch /tmp/db_ready_archive;
+    volumes:
+      - waitforit:/tmp
+  #
+  # Ingest: Script consuming hop messages and storing in archive
+  #
+  archive-ingest:
+    image: scimma/archive-ingest:latest
+    # build:
+    #   context: ./src/archive-ingest
+    container_name: archive-ingest
+    networks:
+      - internal
+    env_file:
+      - env.default
+      - .env
+    entrypoint:
+      - '/bin/bash'
+      - '-c'
+      - >
+        while [[ ! -f /tmp/db_ready_archive ]]; do
+          echo waiting for database...;
+          sleep 2;
+        done;
+        python3.9 -m pip install /src/archive-core;
+        cat /etc/config.toml;
+        /root/archive_ingest.py --config-file /etc/config.toml
+    volumes:
+      - waitforit:/tmp
+      - ./config.toml:/etc/config.toml:ro
+      - ./src/archive-core:/src/archive-core
+  #
+  # Archive API server: RESTful webserver interface to archived data
+  #
+  archive-api:
+    image: scimma/archive-api:latest
+    # build:
+    #   context: ./src/archive-api
+    container_name: archive-api
+    entrypoint:
+      - '/bin/bash'
+      - '-c'
+      - >
+        while [[ ! -f /tmp/db_ready_archive ]]; do
+          echo waiting for database...;
+          sleep 2;
+        done;
+        python3.9 -m pip install /src/archive-core;
+        uvicorn --app-dir=/root --host=0.0.0.0 archive_api:app
+    networks:
+      - internal
+    ports:
+      - 127.0.0.1:8000:8000
+    env_file:
+      - env.default
+      - .env
+    environment:
+      - CONFIG_FILE=/etc/config.toml
+    volumes:
+      - waitforit:/tmp
+      - ./config.toml:/etc/config.toml:ro
+      - ./src/archive-core:/src/archive-core
+  #
+  # MinIO: S3-compatible object store for archived message data
+  #
+  object-store:
+    image: quay.io/minio/minio:RELEASE.2023-01-31T02-24-19Z
+    container_name: object-store
+    env_file:
+      - env.default
+      - .env
+    ports:
+      - 127.0.0.1:9000:9000
+      - 127.0.0.1:9001:9001
+    networks:
+      - internal
+    command:
+    - server
+    - /data
+    - --console-address
+    - ":9001"
+    volumes:
+      - objectstoredata:/data
