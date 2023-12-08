@@ -1,0 +1,35 @@
+version: '3'
+
+networks:
+  internal:
+    external: false
+
+services:
+  ## 
+  ## Archiver
+  ##
+  archiver:
+    image: scimma/archive-core:dev
+    container_name: archive-core
+    environment:
+      - "POSTGRES_REMOTE_DB=true"
+      - "POSTGRESQL_HOST=db"
+    networks:
+      - internal
+    command:
+      - '/bin/bash'
+      - '-c'
+      - make test
+
+  ## 
+  ## Database for tests of archive-core
+  ##
+  db:
+    image: 'postgres:16'
+    container_name: archive-core-db
+    environment:
+      - "POSTGRES_HOST_AUTH_METHOD=trust"
+      - "POSTGRES_USER=postgres"
+      - "POSTGRES_DB=postgres"
+    networks:
+      - internal
